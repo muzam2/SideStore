@@ -210,10 +210,14 @@ private extension SourceDetailContentViewController
     
     func makeAppsDataSource() -> ArrayCollectionViewPrefetchingDataSource<StoreApp, UIImage>
     {
+        // Show every app the source offers, not a 5-app teaser. Upstream capped this at 5 and
+        // put the rest behind a "View All Apps" button pinned bottom-trailing at an estimated
+        // 60x20 pt — easy to miss entirely on visionOS, where a 12-app source read as a 5-app
+        // source. The section is a vertical group with no orthogonal scrolling, so it just
+        // grows taller; the button stays as a redundant but harmless path to the same list.
         let featuredApps = self.source.effectiveFeaturedApps
-        let limitedFeaturedApps = Array(featuredApps.prefix(5))
-        
-        let dataSource = ArrayCollectionViewPrefetchingDataSource<StoreApp, UIImage>(items: limitedFeaturedApps)
+
+        let dataSource = ArrayCollectionViewPrefetchingDataSource<StoreApp, UIImage>(items: featuredApps)
         dataSource.cellIdentifierHandler = { _ in "AppCell" }
         dataSource.predicate = StoreApp.visibleAppsPredicate
         dataSource.cellConfigurationHandler = { [weak self] (cell, storeApp, indexPath) in
