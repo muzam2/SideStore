@@ -36,6 +36,17 @@ final class PairingFileManager: NSObject {
 
     nonisolated func fetchPairingFile() -> String? {
         let fm = FileManager.default
+
+        // Prefer a RemotePairing file produced by Wireless Pairing when present. On
+        // iOS-17+/visionOS the install and JIT services live behind the RSD tunnel,
+        // which requires an RP pairing; the classic lockdown ALTPairingFile can only
+        // reach basic services. WirelessPairViewModel writes these to Documents as
+        // `rp_pairing_file.plist` (or `<DeviceName>_rp.plist`) but nothing ever read
+        // them back, so a successful wireless pair was never used on the next boot.
+        if let rpContents = fetchRemotePairingFile() {
+            return rpContents
+        }
+
         let documentsPath = fm.documentsDirectory.appendingPathComponent("/\(Self.pairingFileName)")
         if fm.fileExists(atPath: documentsPath.path),
            let contents = try? String(contentsOf: documentsPath), !contents.isEmpty 
@@ -57,6 +68,36 @@ final class PairingFileManager: NSObject {
            !UserDefaults.standard.isPairingReset 
         { 
             return plistString 
+        }
+        return nil
+    }
+
+    /// Returns the contents of a RemotePairing pairing file in Documents, if any.
+    /// `rp_pairing_file.plist` wins; otherwise the newest `*_rp.plist`.
+    nonisolated func fetchRemotePairingFile() -> String? {
+        let fm = FileManager.default
+        let docs = fm.documentsDirectory
+
+        let defaultRP = docs.appendingPathComponent("rp_pairing_file.plist")
+        if fm.fileExists(atPath: defaultRP.path),
+           let contents = try? String(contentsOf: defaultRP), !contents.isEmpty {
+            return contents
+        }
+
+        guard let entries = try? fm.contentsOfDirectory(at: docs, includingPropertiesForKeys: [.contentModificationDateKey]) else {
+            return nil
+        }
+        let candidates = entries
+            .filter { $0.lastPathComponent.hasSuffix("_rp.plist") }
+            .sorted { a, b in
+                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return da > db
+            }
+        for url in candidates {
+            if let contents = try? String(contentsOf: url), !contents.isEmpty {
+                return contents
+            }
         }
         return nil
     }

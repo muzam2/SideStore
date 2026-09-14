@@ -426,8 +426,18 @@ public class DatabaseManager: @unchecked Sendable
     
     private func migrateDatabaseToAppGroupIfNeeded() async throws
     {
-        // Only migrate if we haven't migrated yet and there's a valid AltStore app group.
-        guard UserDefaults.standard.requiresAppGroupMigration && Bundle.main.altstoreAppGroup != nil else { return }
+        // Only migrate if we haven't migrated yet, there's a valid AltStore app group,
+        // AND that app group's container is actually accessible. If the app group is
+        // declared but not accessible — which happens when the provisioning profile
+        // didn't grant the group, as can occur for a sideloaded app on visionOS —
+        // defaultDirectoryURL() falls back to the same local path as
+        // legacyDirectoryURL(), so the migration would try to move a store onto
+        // itself and throw "Can't add the same store twice" (NSCocoaError 134081),
+        // blocking launch. Fall back to local storage in that case.
+        guard UserDefaults.standard.requiresAppGroupMigration,
+              Bundle.main.altstoreAppGroup != nil,
+              FileManager.default.altstoreSharedDirectory != nil
+        else { return }
 
         let previousDatabaseURL = PersistentContainer.legacyDirectoryURL().appendingPathComponent("AltStore.sqlite")
         let databaseURL = PersistentContainer.defaultDirectoryURL().appendingPathComponent("AltStore.sqlite")

@@ -84,10 +84,21 @@ final class DeviceRegistrationFlow: @unchecked Sendable {
         } else {
             let deviceName = await MainActor.run { UIDevice.current.name }
             debugLog("[DeviceRegistrationFlow] Registering new device '\(deviceName)' (UDID: \(udid))...")
-            let device = try await DeveloperPortalProxy.shared.registerDevice(name: deviceName, identifier: udid, type: DeveloperPortalProxy.currentDeviceType, team: team)
-            debugLog("[DeviceRegistrationFlow] Device '\(device.name)' (UDID: \(udid)) successfully registered.")
-            UserDefaults.standard.isDeviceRegistered = true
-            return device
+            do {
+                let device = try await DeveloperPortalProxy.shared.registerDevice(name: deviceName, identifier: udid, type: DeveloperPortalProxy.currentDeviceType, team: team)
+                debugLog("[DeviceRegistrationFlow] Device '\(device.name)' (UDID: \(udid)) successfully registered.")
+                UserDefaults.standard.isDeviceRegistered = true
+                return device
+            } catch DeveloperPortalError.deviceAlreadyRegistered(let cause) {
+                // The device is already registered to this team but wasn't returned by
+                // ios/listDevices — this happens when it was registered under Apple's
+                // separate visionOS device platform (e.g. a prior Xcode install of an
+                // Apple Vision Pro). That is exactly the state we need, so treat it as
+                // success instead of failing authentication outright.
+                debugLog("[DeviceRegistrationFlow] Device (UDID: \(udid)) already registered to team (\(cause)); treating as success.")
+                UserDefaults.standard.isDeviceRegistered = true
+                return ALTDevice(name: deviceName, identifier: udid, type: DeveloperPortalProxy.currentDeviceType)
+            }
         }
     }
 }
