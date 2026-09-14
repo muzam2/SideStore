@@ -2,10 +2,10 @@
 
 [submodule "Dependencies/minimuxer"]
     path = Dependencies/minimuxer
-    url = https://github.com/SideStore/minimuxer
-    branch = develop
+    url = https://github.com/rebelancap/minimuxer
+    branch = visionos-support
 [submodule "Dependencies/SideSign"]
 	path = Dependencies/SideSign
-	url = https://github.com/SideStore/SideSign
-	branch = main
+	url = https://github.com/rebelancap/SideSign
+	branch = visionos-support
 
