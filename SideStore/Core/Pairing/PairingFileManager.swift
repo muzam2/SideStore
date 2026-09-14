@@ -37,21 +37,23 @@ final class PairingFileManager: NSObject {
     nonisolated func fetchPairingFile() -> String? {
         let fm = FileManager.default
 
-        // Prefer a RemotePairing file produced by Wireless Pairing when present. On
-        // iOS-17+/visionOS the install and JIT services live behind the RSD tunnel,
-        // which requires an RP pairing; the classic lockdown ALTPairingFile can only
-        // reach basic services. WirelessPairViewModel writes these to Documents as
-        // `rp_pairing_file.plist` (or `<DeviceName>_rp.plist`) but nothing ever read
-        // them back, so a successful wireless pair was never used on the next boot.
-        if let rpContents = fetchRemotePairingFile() {
-            return rpContents
-        }
-
-        let documentsPath = fm.documentsDirectory.appendingPathComponent("/\(Self.pairingFileName)")
-        if fm.fileExists(atPath: documentsPath.path),
-           let contents = try? String(contentsOf: documentsPath), !contents.isEmpty 
-        {
-            return contents
+        // Prefer a RemotePairing capable file when present. On iOS-17+/visionOS the
+        // install and JIT services live behind the RSD tunnel, which requires an RP
+        // pairing; a classic lockdown-only pairing can reach basic services only.
+        // WirelessPairViewModel writes `rp_pairing_file.plist` (or
+        // `<DeviceName>_rp.plist`) but nothing ever read them back, so a successful
+        // wireless pair was never used on the next boot.
+        //
+        // RP-ness alone is not enough to choose, though: `ALTPairingFile` is what every
+        // external pairing tool (re-)writes, and on a Vision Pro iloader writes a MERGED
+        // plist there that carries the RP keys too — so it is usually the freshest RP
+        // pairing on the device. A stale `rp_pairing_file.plist` left behind by an older
+        // pairing run is rejected by the device at pair-verify time
+        // (`tunnel_create_rppairing` -> "Connection reset by peer"), which surfaced as
+        // ".rppairing UDID not found" during sign-in. So rank RP files ahead of lockdown
+        // files, but break ties by modification date and use the newest.
+        if let best = bestPairingFileInDocuments() {
+            return best
         }
         if let url = Bundle.main.url(forResource: AppConstants.Pairing.bundleResourceName, withExtension: AppConstants.Pairing.fileExtension),
            fm.fileExists(atPath: url.path),
@@ -72,34 +74,45 @@ final class PairingFileManager: NSObject {
         return nil
     }
 
-    /// Returns the contents of a RemotePairing pairing file in Documents, if any.
-    /// `rp_pairing_file.plist` wins; otherwise the newest `*_rp.plist`.
-    nonisolated func fetchRemotePairingFile() -> String? {
+    /// Picks the best pairing file sitting in Documents: `ALTPairingFile`, the
+    /// Wireless-Pair `rp_pairing_file.plist`, and any `<DeviceName>_rp.plist`.
+    /// Ranked by "parses as a RemotePairing file" first, then by newest on disk, so a
+    /// stale RP pairing can never shadow a freshly written one.
+    nonisolated func bestPairingFileInDocuments() -> String? {
         let fm = FileManager.default
         let docs = fm.documentsDirectory
 
-        let defaultRP = docs.appendingPathComponent("rp_pairing_file.plist")
-        if fm.fileExists(atPath: defaultRP.path),
-           let contents = try? String(contentsOf: defaultRP), !contents.isEmpty {
-            return contents
+        var urls: [URL] = [
+            docs.appendingPathComponent(Self.pairingFileName),
+            docs.appendingPathComponent("rp_pairing_file.plist"),
+        ]
+        if let entries = try? fm.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) {
+            urls.append(contentsOf: entries.filter { $0.lastPathComponent.hasSuffix("_rp.plist") })
         }
 
-        guard let entries = try? fm.contentsOfDirectory(at: docs, includingPropertiesForKeys: [.contentModificationDateKey]) else {
-            return nil
-        }
-        let candidates = entries
-            .filter { $0.lastPathComponent.hasSuffix("_rp.plist") }
-            .sorted { a, b in
-                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                return da > db
+        var best: (contents: String, isRP: Bool, date: Date)?
+        var seen = Set<String>()
+        for url in urls {
+            guard seen.insert(url.standardizedFileURL.path).inserted,
+                  fm.fileExists(atPath: url.path),
+                  let contents = try? String(contentsOf: url), !contents.isEmpty
+            else { continue }
+
+            let isRP = ((try? PairingFileParser.parse(content: contents))?.mode == .rppairing)
+            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+
+            let wins: Bool
+            if let current = best {
+                wins = (isRP != current.isRP) ? isRP : (date > current.date)
+            } else {
+                wins = true
             }
-        for url in candidates {
-            if let contents = try? String(contentsOf: url), !contents.isEmpty {
-                return contents
+            if wins {
+                best = (contents, isRP, date)
+                debugLog("[PairingFile] candidate '\(url.lastPathComponent)' (rppairing: \(isRP), modified: \(date)) is now preferred")
             }
         }
-        return nil
+        return best?.contents
     }
 
     func savePairingFile(contents: String) throws {
