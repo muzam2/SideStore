@@ -160,6 +160,10 @@ keychain prompt appeared.
 - Disk: deleted the stale 107 MB `SideStore.xcarchive` and 24 MB `SideStore.ipa`
   left at repo root by the July builds; all output now lives in `build/`.
 
+## Published (2026-09-14)
+
+Published 2026-09-14: iloader 2.3.5 (notarized) on rebelancap/iloader release `visionos`; SideStore 0.7.0 on rebelancap/SideStore release `visionos-0.7.0` (iloader URL updated); LC combo on rebelancap/LiveContainer release `visionos`. Branch visionos-tunnel force-pushed (rebased); backup branch pushed. Verified on headset: sign-in, registration, app update, icon after reboot.
+
 ## Next steps
 
 1. **Austin retests in the headset** (this is the open item):
@@ -205,13 +209,4 @@ keychain prompt appeared.
 
 ## Live claims
 
-- No simulator lane held; no simulators booted. The physical Vision Pro
-  (00008142-001838943400401C) is plugged in over USB; this round installed
-  0.7.0 through iloader 2.3.4 over the network and read/wrote the app container
-  via `afcclient`. Nothing is left running against it; the iloader window is
-  back at its main screen.
-- No background agents running.
-- Working tree clean on `visionos-support` (HEAD at this round's STATUS commit); both submodules clean and
-  unchanged this round (still unpushed — see Next steps).
-- Backups: `backup/visionos-support-pre-sync-2026-09-13` (superproject),
-  `backup/vision-2026-09-13` in `Dependencies/minimuxer`.
+None. Session closed cleanly 2026-09-14: nothing booted, no agents running, tree clean.
