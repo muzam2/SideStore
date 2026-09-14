@@ -1,7 +1,7 @@
 # STATUS — sidestore (Vision Pro fork)
 
 Branch: `visionos-support` (fork remote: rebelancap/SideStore; `origin` = SideStore/SideStore upstream)
-Last updated: 2026-09-13
+Last updated: 2026-09-13 (second round)
 
 ## Current state
 
@@ -27,7 +27,46 @@ with `Dependencies/SideSign`. Both live submodules sit on local
 - `Dependencies/SideSign` @ `fb1a307` (off SideStore/SideSign `df2b8e4`)
 - `Dependencies/minimuxer` @ `eb67fe9` (off SideStore/minimuxer `98c3c79`)
 
-## Last round (2026-09-13) — upstream sync + IPA rebuild
+## Last round (2026-09-13, round 2) — ".rppairing UDID not found" fixed
+
+Symptom: on the headset the 0.7.0 build signed in to the Apple ID fine (503 gone),
+then device registration died with `.rppairing UDID not found`.
+
+Root cause (proved from the device's own console log, pulled over USB with
+`afcclient --container com.SideStore.SideStore.57G8J46Z2T get
+/Documents/ConsoleLogs/console_20260913_190216_780.log`):
+
+    [IdeviceGateway] ensureRPConnection() tunnel_create_rppairing failed with code: 1,
+      message: Socket(Os { code: 54, kind: ConnectionReset, ... })
+    [IdeviceGateway] fetchUDID() ensureRPConnection failed: The pairing file is invalid
+
+SideStore's Documents held TWO pairing files: a stale `rp_pairing_file.plist`
+(501 B, mtime 2026-07-26, from the July vision-sideload run) and the
+`ALTPairingFile.mobiledevicepairing` iloader placed today (9771 B). The fresh one is
+a MERGED plist — lockdown keys PLUS the RemotePairing keys
+(identifier/public_key/private_key/alt_irk) — so it parses as `.rppairing`. Our
+re-applied preference commit returned `rp_pairing_file.plist` unconditionally before
+ever looking at it, so SideStore pair-verified with the dead July pairing, the headset
+reset the connection, `IdeviceGateway.fetchUDID()` returned nil
+(`Dependencies/minimuxer/DeviceGateway/idevice/IdeviceGateway.swift:636`), and
+`MinimuxerImpl.isReady()` failed at `Sources/MinimuxerImpl.swift:221`. Nothing in
+minimuxer was wrong — upstream merely started calling `fetchUDID()` in rppairing mode
+(0.6.4's `isReady` skipped it for RP, which is why this never bit before).
+
+Fix (`f559ca42`, SideStore proper, no submodule change):
+`SideStore/Core/Pairing/PairingFileManager.swift` — `fetchRemotePairingFile()` replaced
+by `bestPairingFileInDocuments()`, which ranks every candidate (ALTPairingFile,
+rp_pairing_file.plist, `*_rp.plist`) by "parses as .rppairing" first and then by newest
+mtime. A stale RP pairing can no longer shadow a freshly written one.
+
+Rebuilt and reinstalled: archive + strip PlugIns + zip as before →
+`build/SideStore-visionOS.ipa` (25.4 MB, 0.7.0 / 0700, no `.appex`), signed and
+installed on the headset through the running iloader 2.3.4 ("InstallComplete",
+"Sign & Install App — Operation completed"), then Manage Pairing File ▸ Place for
+`com.SideStore.SideStore.57G8J46Z2T` (ALTPairingFile mtime refreshed on device). No
+keychain prompt appeared.
+
+## Previous round (2026-09-13) — upstream sync + IPA rebuild
 
 - Backup branch `backup/visionos-support-pre-sync-2026-09-13` created (nothing was
   stashable; the only dirt was submodule pointers). Old AltSign vision commit
@@ -70,24 +109,33 @@ with `Dependencies/SideSign`. Both live submodules sit on local
 
 ## Next steps
 
-1. Austin picks the GitHub release tag. Proposal: **`visionos-0.7.0`** (upstream
-   marketing version is 0.7.0; the last one was `visionos-0.6.4`). Nothing was
-   pushed and no release was touched this round.
-2. On-headset acceptance run before any publish: install
+1. **Austin retests in the headset** (this is the open item):
+   open SideStore ▸ Settings ▸ Advanced ▸ Anisette ▸ Reset ADI, then sign in with the
+   Apple ID. Sign-in and the device-registration step right after it should both pass.
+   If registration still fails, pull the newest
+   `/Documents/ConsoleLogs/console_*.log` off the device (afcclient recipe above) and
+   look for `ensureRPConnection()`/`fetchUDID()` lines.
+2. Optional cleanup: the dead `rp_pairing_file.plist` is still on the headset (the fix
+   makes it harmless; a backup copy is not kept in-repo). Deleting it via
+   `afcclient --container com.SideStore.SideStore.57G8J46Z2T rm
+   /Documents/rp_pairing_file.plist` was attempted this round but blocked by the tool
+   sandbox.
+3. Austin picks the GitHub release tag. Proposal: **`visionos-0.7.0`**. Nothing pushed.
+4. On-headset acceptance run before any publish (JIT/DDI): install
    `build/SideStore-visionOS.ipa` on the Vision Pro (iloader / vision-sideload),
    then **reset adi.pb** (Settings ▸ Advanced ▸ Anisette ▸ Reset ADI) — upstream
    requires it after the akd client-info change — and sign in with the Apple ID.
    Watch for: sign-in succeeding (no 503, no "device already registered"), the
    wireless RP pairing file being picked up on boot, and JIT finding the xrOS DDI.
-3. If sign-in works, decide whether to also refresh the LiveContainer-embedded
+5. If sign-in works, decide whether to also refresh the LiveContainer-embedded
    SideStore build (`rebelancap/LiveContainer` release `sidestore-visionos-dep`),
    which is a separate 0.6.4-era IPA pinned by iloader and is still on the Xcode
    client-info default.
-4. Push `visionos-support` to rebelancap/SideStore and push the two submodule
+6. Push `visionos-support` to rebelancap/SideStore and push the two submodule
    branches somewhere durable (a rebelancap/SideSign fork and the existing
    rebelancap/minimuxer) — the gitlinks currently point at local-only commits, so
    a fresh clone of this branch cannot build.
-5. Optional upstream PRs: the four re-applied fixes are all generic, not
+7. Optional upstream PRs: the four re-applied fixes are all generic, not
    VP-specific hacks; the PairingFileManager one in particular is a plain upstream
    bug (Wireless Pair writes a file nothing reads).
 
@@ -107,7 +155,14 @@ with `Dependencies/SideSign`. Both live submodules sit on local
 
 ## Live claims
 
-- No simulator lane held; no devices booted (nothing was launched this round —
+- No simulator lane held; no simulators booted. The physical Vision Pro
+  (00008142-001838943400401C) is plugged in over USB and was read via `afcclient`;
+  nothing is left running against it.
+- No background agents running.
+- Working tree clean on `visionos-support` (HEAD `f559ca42`); both submodules clean and
+  unchanged this round (still unpushed — see Next steps).
+- Backups: `backup/visionos-support-pre-sync-2026-09-13` (superproject),
+  `backup/vision-2026-09-13` in `Dependencies/minimuxer`.
   archive-only build).
 - No background agents running.
 - Working tree clean on `visionos-support`; both submodules clean on their local
