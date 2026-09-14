@@ -1,7 +1,7 @@
 # STATUS — sidestore (Vision Pro fork)
 
 Branch: `visionos-support` (fork remote: rebelancap/SideStore; `origin` = SideStore/SideStore upstream)
-Last updated: 2026-09-13 (second round)
+Last updated: 2026-09-13 (third round)
 
 ## Current state
 
@@ -27,7 +27,60 @@ with `Dependencies/SideSign`. Both live submodules sit on local
 - `Dependencies/SideSign` @ `fb1a307` (off SideStore/SideSign `df2b8e4`)
 - `Dependencies/minimuxer` @ `eb67fe9` (off SideStore/minimuxer `98c3c79`)
 
-## Last round (2026-09-13, round 2) — ".rppairing UDID not found" fixed
+## Last round (2026-09-13, round 3) — blank Home View icon: no build regression
+
+Symptom: the 0.7.0 build runs fine on the headset but its Home View icon is blank.
+
+Diagnosis: **the 0.7.0 IPA's icon payload is byte-identical to the shipped
+`visionos-0.6.4` IPA that renders an icon.** Evidence (both IPAs unpacked and
+compared):
+
+- `Info.plist`: `CFBundleIcons`, `CFBundleIcons~ipad` (primary + all 11
+  `CFBundleAlternateIcons`), `CFBundleIconFiles` (`AppIcon60x60`,
+  `AppIcon76x76`), `CFBundleIconName = AppIcon` and
+  `NSAppIconComplementingColorNames` (`GradientTop`/`GradientBottom`) are
+  identical. The full plist diff is only: UDID, `DTPlatformBuild` (Xcode beta),
+  version strings, a `localdevvpn` URL scheme, extra Bonjour services, the local
+  network usage string and the `processing` background mode. `UIDeviceFamily`
+  `[1, 2]`, `MinimumOSVersion 15.0`, `UIRequiredDeviceCapabilities [arm64]` and
+  `CFBundleSupportedPlatforms [iPhoneOS]` match, so neither our arm64 edit nor
+  the PlugIns strip touched icon keys.
+- `xcrun assetutil --info Assets.car`: same 30 AppIcon renditions (phone + pad +
+  1024 marketing, same byte sizes), same 11 alternate icons, both colour assets
+  present, same CAR header (StorageVersion 17, Platform ios 15.0).
+- Loose `AppIcon60x60@2x.png` / `AppIcon76x76@2x~ipad.png`: `cmp`-identical, and
+  identical between `build/SideStore-visionOS.xcarchive` and the packaged IPA, so
+  the strip/zip step drops nothing.
+- Repo: `git diff 0.6.4 HEAD` over `AltStore/Resources/Icons.xcassets/AppIcon.appiconset`
+  is empty, and `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` /
+  `ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES` are unchanged. No
+  Icon Composer `.icon` bundle exists anywhere upstream.
+- Device side: installd's own record of the installed app (iloader log,
+  `com.SideStore.SideStore.57G8J46Z2T`) lists every icon key, and the install
+  uploaded all 142 files of the signed bundle over AFC, so nothing was dropped in
+  transit.
+
+**No repo fix was warranted — there is no icon regression to fix.** The blank icon
+is device-side (visionOS icon cache for the bundle id, refreshed in place across
+July's 0.6.4 install and today's 0.7.0 installs).
+
+Actions taken this round: re-signed and reinstalled the same
+`build/SideStore-visionOS.ipa` through iloader 2.3.4 ("InstallComplete",
+"Operation completed", no keychain prompt), re-placed the pairing file
+("Pairing file placed successfully"), and **deleted the stale July
+`rp_pairing_file.plist`** from the headset
+(`afcclient --container com.SideStore.SideStore.57G8J46Z2T rm
+/Documents/rp_pairing_file.plist`; the follow-up `ls` shows only
+`ALTPairingFile.mobiledevicepairing`, `DMG`, `ConsoleLogs`,
+`anisette-servers.json`). The archive at `build/SideStore-visionOS.xcarchive` is
+untouched for the LiveContainer combo build.
+
+Still open: Austin must look at the Home View. If the icon is still blank after
+this reinstall, the remaining lever is a **delete + fresh install** of SideStore
+on the headset (that is what rebuilds visionOS's icon cache entry; it also wipes
+the app's data container, so sources/pairing have to be re-placed) — his call.
+
+## Previous round (2026-09-13, round 2) — ".rppairing UDID not found" fixed
 
 Symptom: on the headset the 0.7.0 build signed in to the Apple ID fine (503 gone),
 then device registration died with `.rppairing UDID not found`.
@@ -66,7 +119,7 @@ installed on the headset through the running iloader 2.3.4 ("InstallComplete",
 `com.SideStore.SideStore.57G8J46Z2T` (ALTPairingFile mtime refreshed on device). No
 keychain prompt appeared.
 
-## Previous round (2026-09-13) — upstream sync + IPA rebuild
+## Earlier round (2026-09-13) — upstream sync + IPA rebuild
 
 - Backup branch `backup/visionos-support-pre-sync-2026-09-13` created (nothing was
   stashable; the only dirt was submodule pointers). Old AltSign vision commit
@@ -115,11 +168,8 @@ keychain prompt appeared.
    If registration still fails, pull the newest
    `/Documents/ConsoleLogs/console_*.log` off the device (afcclient recipe above) and
    look for `ensureRPConnection()`/`fetchUDID()` lines.
-2. Optional cleanup: the dead `rp_pairing_file.plist` is still on the headset (the fix
-   makes it harmless; a backup copy is not kept in-repo). Deleting it via
-   `afcclient --container com.SideStore.SideStore.57G8J46Z2T rm
-   /Documents/rp_pairing_file.plist` was attempted this round but blocked by the tool
-   sandbox.
+2. ~~Delete the dead `rp_pairing_file.plist` from the headset~~ — done this
+   round (round 3), confirmed by `afcclient ... ls /Documents`.
 3. Austin picks the GitHub release tag. Proposal: **`visionos-0.7.0`**. Nothing pushed.
 4. On-headset acceptance run before any publish (JIT/DDI): install
    `build/SideStore-visionOS.ipa` on the Vision Pro (iloader / vision-sideload),
@@ -156,16 +206,12 @@ keychain prompt appeared.
 ## Live claims
 
 - No simulator lane held; no simulators booted. The physical Vision Pro
-  (00008142-001838943400401C) is plugged in over USB and was read via `afcclient`;
-  nothing is left running against it.
+  (00008142-001838943400401C) is plugged in over USB; this round installed
+  0.7.0 through iloader 2.3.4 over the network and read/wrote the app container
+  via `afcclient`. Nothing is left running against it; the iloader window is
+  back at its main screen.
 - No background agents running.
-- Working tree clean on `visionos-support` (HEAD `f559ca42`); both submodules clean and
+- Working tree clean on `visionos-support` (HEAD at this round's STATUS commit); both submodules clean and
   unchanged this round (still unpushed — see Next steps).
-- Backups: `backup/visionos-support-pre-sync-2026-09-13` (superproject),
-  `backup/vision-2026-09-13` in `Dependencies/minimuxer`.
-  archive-only build).
-- No background agents running.
-- Working tree clean on `visionos-support`; both submodules clean on their local
-  `visionos-support` branches (unpushed — see Next steps 4).
 - Backups: `backup/visionos-support-pre-sync-2026-09-13` (superproject),
   `backup/vision-2026-09-13` in `Dependencies/minimuxer`.
