@@ -188,6 +188,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 }
 
                 // Perform one-time maintenance tasks after database is started
+                await AnisetteServersManager.shared.migrateToNewAnisetteServersIfNeeded()
                 await MaintenanceManager.shared.performMaintenanceIfNeeded()
             }
             catch

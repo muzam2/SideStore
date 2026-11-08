@@ -171,7 +171,13 @@ public actor AnisetteConfigManager {
     /// (HTTP 503 → -80045). The identity is also pushed into SideSign's GrandSlam
     /// `User-Agent`, and a cached adi.pb provisioned under a different identity is
     /// discarded so that it gets re-provisioned with the matching one.
-    public func resolveClientIdentity() async -> AnisetteClientIdentity {
+    ///
+    /// - Parameters:
+    ///   - server: the anisette server the data will come from (nil = the active server).
+    ///   - source: where the ADI data is produced (`server.absoluteString`, or
+    ///     `AnisetteConfigManager.onDeviceSource` for on-device ADI). A cached adi.pb made
+    ///     by a different source (e.g. ODA → remote, or another server) is stale too.
+    public func resolveClientIdentity(server: URL? = nil, source: String? = nil) async -> AnisetteClientIdentity {
         let config = loadConfig()
         let identity: AnisetteClientIdentity
 
@@ -182,33 +188,41 @@ public actor AnisetteConfigManager {
             )
             debugLog("[AnisetteConfigManager] Using user-configured client identity: \(identity.clientInfo)")
         } else {
-            identity = await AnisetteClientIdentityResolver.shared.resolve()
+            identity = await AnisetteClientIdentityResolver.shared.resolve(server: server)
         }
 
         // The GSA login must present the same identity as the anisette data.
         SideSignConfigManager.shared.applyConfigToDeveloperPortal(anisetteIdentity: identity)
 
-        // adi.pb is bound to the identity it was provisioned with; drop a stale one.
+        // adi.pb is bound to the identity and the ADI source it was provisioned with; drop a stale one.
         if let blob = anisetteAdiBlob, !blob.isEmpty {
             let provisionedWith = UserDefaults.standard.anisetteAdiBlobClientInfo
-            if provisionedWith != identity.clientInfo {
-                debugLog("[AnisetteConfigManager] Cached adi.pb was provisioned with '\(provisionedWith ?? "unknown")' but the current client identity is '\(identity.clientInfo)'. Discarding it so it is re-provisioned.")
+            let provisionedBy = UserDefaults.standard.anisetteAdiBlobSource
+            let identityChanged = provisionedWith != identity.clientInfo
+            let sourceChanged = (source != nil) && (provisionedBy != source)
+            if identityChanged || sourceChanged {
+                debugLog("[AnisetteConfigManager] Cached adi.pb was provisioned with '\(provisionedWith ?? "unknown")' via '\(provisionedBy ?? "unknown")' but the current client identity is '\(identity.clientInfo)' via '\(source ?? "n/a")'. Discarding it so it is re-provisioned.")
                 anisetteAdiBlob = nil
                 UserDefaults.standard.anisetteAdiBlobClientInfo = nil
+                UserDefaults.standard.anisetteAdiBlobSource = nil
             }
         }
 
         return identity
     }
 
-    /// Records the identity a freshly provisioned adi.pb belongs to.
-    public nonisolated func recordProvisionedIdentity(clientInfo: String) {
+    /// `source` value for adi.pb produced by on-device ADI libraries.
+    public static let onDeviceSource = "oda"
+
+    /// Records the identity and source a freshly provisioned adi.pb belongs to.
+    public nonisolated func recordProvisionedIdentity(clientInfo: String, source: String) {
         UserDefaults.standard.anisetteAdiBlobClientInfo = clientInfo
+        UserDefaults.standard.anisetteAdiBlobSource = source
     }
 
-    public func makeRequestHeaders() async -> AnisetteRequestHeaders {
+    public func makeRequestHeaders(server: URL? = nil, source: String? = nil) async -> AnisetteRequestHeaders {
         let config = loadConfig()
-        let identity = await resolveClientIdentity()
+        let identity = await resolveClientIdentity(server: server, source: source)
         return AnisetteRequestHeaders().with {
             $0.clientInfo = identity.clientInfo
             $0.userAgent  = identity.userAgent

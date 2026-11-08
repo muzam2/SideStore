@@ -89,8 +89,32 @@ public enum AppConstants {
 
         public enum Servers {
             public static let defaultSource        = "https://servers.sidestore.io/servers.json"
-            public static let defaultServerURL     = "https://ani.sidestore.io"
+            /// "New mac" anisette family (servers.json kind 2). Apple rejects the legacy
+            /// Android-ADI family (ani.sidestore.io & co.) since late 2026 (503 / -80045).
+            public static let defaultServerURL     = "https://new.ani.sidestore.io"
             public static let connectivityCheckURL = URL(string: "https://www.apple.com/library/test/success.html")!
+
+            /// servers.json "kind" value of the new-mac family.
+            public static let newMacKind = 2
+
+            /// Built-in new-mac servers, used before the first servers.json sync and
+            /// guaranteed to be present/unhidden after the 0.7.2 migration.
+            public static let builtInServers: [(name: String, address: String)] = [
+                ("SideStore (New)", "https://new.ani.sidestore.io"),
+                ("jkcoxson",        "https://mac-ani.jkcoxson.com"),
+                ("iloader",         "https://ani.iloader.app"),
+            ]
+
+            /// Known legacy-family servers (for lists that carry no "kind").
+            public static let legacyServerAddresses: Set<String> = [
+                "https://ani.sidestore.io",
+                "https://ani.sidestore.app",
+                "https://ani.sidestore.zip",
+                "https://ani.846969.xyz",
+                "https://ani.stikstore.app",
+                "https://ani.jkcoxson.com",
+                "https://win.ani.sidestore.io",
+            ]
         }
 
         public static let remoteCacheDuration     = Constants.Anisette.remoteCacheDuration

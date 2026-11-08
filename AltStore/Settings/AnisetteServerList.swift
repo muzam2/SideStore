@@ -39,6 +39,9 @@ struct Server: Codable, Identifiable, Hashable {
     var id: String { address }
     var name: String
     var address: String
+    /// servers.json "kind": 0 = legacy Android-ADI anisette (rejected by Apple since late 2026),
+    /// 1 = Windows ADI, 2 = "new mac" anisette (the only family Apple currently accepts).
+    var kind: Int? = nil
 }
 final class AnisetteViewModel: ObservableObject {
     static let defaultSource = AnisetteServersManager.defaultSource

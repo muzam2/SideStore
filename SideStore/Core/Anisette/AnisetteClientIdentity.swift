@@ -9,8 +9,8 @@
 //
 //  The anisette-v3 protocol publishes the identity that belongs to a server's ADI
 //  libraries at `<server>/v3/client_info`. This helper fetches it from the active
-//  anisette server (with a compiled-in fallback that matches the public SideStore
-//  server) so that provisioning, anisette headers and the GSA login all use the
+//  anisette server (with a compiled-in fallback that matches the public "new mac"
+//  servers) so that provisioning, anisette headers and the GSA login all use the
 //  same identity. Equivalent to the fix in isideload 0.5.x.
 //
 
@@ -20,10 +20,12 @@ public struct AnisetteClientIdentity: Codable, Equatable, Sendable {
     public let clientInfo: String
     public let userAgent: String
 
-    /// Identity published by https://ani.sidestore.io/v3/client_info (anisette-v3).
+    /// Identity published by the "new mac" anisette servers (https://new.ani.sidestore.io,
+    /// https://mac-ani.jkcoxson.com, https://ani.iloader.app) at /v3/client_info. The legacy
+    /// Android-ADI family (ani.sidestore.io: MacBookPro13,2 / macOS 13.1) is rejected by Apple.
     public static let fallback = AnisetteClientIdentity(
-        clientInfo: "<MacBookPro13,2> <macOS;13.1;22C65> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
-        userAgent: "akd/1.0 CFNetwork/808.1.4"
+        clientInfo: "<MacBookPro13,3> <Mac OS X;10.12.6;16G29> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
+        userAgent: "akd/1.0 CFNetwork/811.5.4 Darwin/16.7.0"
     )
 }
 

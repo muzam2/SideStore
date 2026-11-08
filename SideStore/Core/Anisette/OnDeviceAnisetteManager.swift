@@ -48,6 +48,9 @@ public actor OnDeviceAnisetteManager {
 
         let identifierUUID = await AnisetteConfigManager.shared.resolveDeviceIdentifier()
 
+        // Resolve identity first: this may discard a stale adi.pb (identity/source changed).
+        let headers = await AnisetteConfigManager.shared.makeRequestHeaders(source: AnisetteConfigManager.onDeviceSource)
+
         var existingAdiPbData: Data? = nil
         if let base64Blob = AnisetteConfigManager.shared.anisetteAdiBlob,
            let decoded = Data(base64Encoded: base64Blob, options: .ignoreUnknownCharacters),
@@ -57,8 +60,6 @@ public actor OnDeviceAnisetteManager {
         } else {
             debugLog("[OnDeviceAnisetteManager] [Fetch] No existing adi.pb in Keychain -> local in-memory provisioning will be performed")
         }
-
-        let headers = await AnisetteConfigManager.shared.makeRequestHeaders()
 
         let sourceURLString = UserDefaults.standard.menuAnisetteList.isEmpty ? AnisetteServersManager.defaultSource : UserDefaults.standard.menuAnisetteList
         let sourceURL = URL(string: sourceURLString) ?? AppConstants.Anisette.defaultODAMetadataURL
@@ -75,7 +76,7 @@ public actor OnDeviceAnisetteManager {
 
         if let freshBlob = newAdiPb {
             AnisetteConfigManager.shared.anisetteAdiBlob = freshBlob.base64EncodedString()
-            AnisetteConfigManager.shared.recordProvisionedIdentity(clientInfo: anisetteData.clientInfo)
+            AnisetteConfigManager.shared.recordProvisionedIdentity(clientInfo: anisetteData.clientInfo, source: AnisetteConfigManager.onDeviceSource)
             debugLog("[OnDeviceAnisetteManager] [Fetch] Fresh local provisioning completed -> saved new adi.pb (\(freshBlob.count) bytes) to Keychain")
         }
 

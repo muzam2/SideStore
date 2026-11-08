@@ -7,17 +7,37 @@
 //
 
 import Foundation
+import SideSign
 
 public struct AnisetteServerItem: Codable, Identifiable, Hashable {
     public var id: String { address }
     public var name: String
     public var address: String
     public var isHidden: Bool
+    /// servers.json "kind" (see `AppConstants.Anisette.Servers`); nil for user-added or legacy entries.
+    public var kind: Int?
 
-    public init(name: String, address: String, isHidden: Bool = false) {
+    public init(name: String, address: String, isHidden: Bool = false, kind: Int? = nil) {
         self.name = name
         self.address = address
         self.isHidden = isHidden
+        self.kind = kind
+    }
+
+    /// Legacy (Android-ADI / Windows-ADI) anisette family that Apple's GSA rejects (503 / -80045).
+    public var isLegacyFamily: Bool {
+        if let kind { return kind != AppConstants.Anisette.Servers.newMacKind }
+        return AppConstants.Anisette.Servers.legacyServerAddresses.contains(Self.normalized(address))
+    }
+
+    /// Known "new mac" anisette server (kind 2 or one of the built-ins).
+    public var isNewMacFamily: Bool {
+        if kind == AppConstants.Anisette.Servers.newMacKind { return true }
+        return AppConstants.Anisette.Servers.builtInServers.contains { Self.normalized($0.address) == Self.normalized(address) }
+    }
+
+    static func normalized(_ address: String) -> String {
+        address.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 }
 
@@ -84,7 +104,7 @@ public actor AnisetteServersManager {
             for dict in json {
                 if let name = dict["name"] as? String, let address = dict["address"] as? String {
                     let isHidden = dict["isHidden"] as? Bool ?? false
-                    items.append(AnisetteServerItem(name: name, address: address, isHidden: isHidden))
+                    items.append(AnisetteServerItem(name: name, address: address, isHidden: isHidden, kind: dict["kind"] as? Int))
                 }
             }
         }
@@ -112,9 +132,68 @@ public actor AnisetteServersManager {
         }
     }
 
+    /// Servers used for anisette fetching / failover, in order: "new mac" family first,
+    /// then servers of unknown kind (user-added), then anything else. Legacy-family
+    /// servers are hidden by default (see `syncWithRemote`), so normally they are not
+    /// returned at all. Falls back to the built-in list when nothing is stored yet
+    /// (fresh install before the first server-list sync).
     public func getActiveServerURLs() -> [String] {
-        let servers = loadLocalServers()
-        return servers.filter { !$0.isHidden }.map(\.address)
+        let servers = loadLocalServers().filter { !$0.isHidden }
+        guard !servers.isEmpty else {
+            return AppConstants.Anisette.Servers.builtInServers.map { $0.address }
+        }
+        let newMac   = servers.filter { $0.isNewMacFamily }
+        let unknown  = servers.filter { !$0.isNewMacFamily && !$0.isLegacyFamily }
+        let legacy   = servers.filter { !$0.isNewMacFamily && $0.isLegacyFamily }
+        return (newMac + unknown + legacy).map(\.address)
+    }
+
+    /// One-time migration (0.7.2): Apple now rejects anisette data from the legacy
+    /// Android-ADI family (ani.sidestore.io & co.) and from the on-device ADI libraries,
+    /// so switch to remote anisette on a "new mac" server, hide the legacy servers, make
+    /// the built-in new servers available even before the first list sync, and drop any
+    /// adi.pb provisioned under the old family.
+    public func migrateToNewAnisetteServersIfNeeded() async {
+        guard !UserDefaults.standard.anisetteNewServersMigrationDone else { return }
+        debugLog("[AnisetteServersManager] Migrating anisette configuration to the new-mac server family...")
+
+        // Best effort: refresh the catalogue so `kind` is known for every server.
+        if !isOfflineMode {
+            try? await syncWithRemote()
+        }
+
+        var items = loadLocalServers()
+        for (index, item) in items.enumerated() where item.isLegacyFamily && !item.isNewMacFamily {
+            items[index].isHidden = true
+        }
+        for builtIn in AppConstants.Anisette.Servers.builtInServers.reversed() {
+            if let index = items.firstIndex(where: { AnisetteServerItem.normalized($0.address) == AnisetteServerItem.normalized(builtIn.address) }) {
+                items[index].isHidden = false
+                if items[index].kind == nil { items[index].kind = AppConstants.Anisette.Servers.newMacKind }
+            } else {
+                items.insert(AnisetteServerItem(name: builtIn.name, address: builtIn.address, isHidden: false, kind: AppConstants.Anisette.Servers.newMacKind), at: 0)
+            }
+        }
+        saveLocalServers(items)
+
+        let current = UserDefaults.standard.menuAnisetteURL
+        let currentItem = items.first { AnisetteServerItem.normalized($0.address) == AnisetteServerItem.normalized(current) }
+        if currentItem == nil || currentItem?.isHidden == true || currentItem?.isNewMacFamily != true {
+            UserDefaults.standard.menuAnisetteURL = AppConstants.Anisette.Servers.defaultServerURL
+        }
+
+        UserDefaults.standard.useOnDeviceAnisette = false
+
+        // adi.pb (Keychain) was provisioned with the old family; force re-provisioning.
+        AnisetteConfigManager.shared.anisetteAdiBlob = nil
+        UserDefaults.standard.anisetteAdiBlobClientInfo = nil
+        UserDefaults.standard.anisetteAdiBlobSource = nil
+        UserDefaults.standard.anisetteServerClientInfo = nil
+        UserDefaults.standard.anisetteServerUserAgent = nil
+        AnisetteDataManager.shared.clearCache()
+
+        UserDefaults.standard.anisetteNewServersMigrationDone = true
+        debugLog("[AnisetteServersManager] Migration complete. Active server: \(UserDefaults.standard.menuAnisetteURL), on-device anisette: off.")
     }
 
     // MARK: - Offline File Mode State Keys
@@ -254,7 +333,12 @@ public actor AnisetteServersManager {
             inMemoryServersCache = nil
             let sourceURL = UserDefaults.standard.menuAnisetteList.isEmpty ? AnisetteServersManager.defaultSource : UserDefaults.standard.menuAnisetteList
             let remoteServers = try await fetchRemoteServers(serverSource: sourceURL)
-            let rawItems = remoteServers.map { AnisetteServerItem(name: $0.name, address: $0.address, isHidden: false) }
+            let rawItems = remoteServers.map { AnisetteServerItem(name: $0.name, address: $0.address, isHidden: false, kind: $0.kind) }
+                .map { item -> AnisetteServerItem in
+                    var item = item
+                    item.isHidden = item.isLegacyFamily && !item.isNewMacFamily
+                    return item
+                }
             saveLocalServers(rawItems)
             return rawItems
         }
@@ -296,14 +380,14 @@ public actor AnisetteServersManager {
         } else if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
             for dict in json {
                 if let name = dict["name"] as? String, let address = dict["address"] as? String {
-                    aniServers.append(Server(name: name, address: address))
+                    aniServers.append(Server(name: name, address: address, kind: dict["kind"] as? Int))
                 }
             }
         } else if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let list = json["servers"] as? [[String: Any]] {
             for dict in list {
                 if let name = dict["name"] as? String, let address = dict["address"] as? String {
-                    aniServers.append(Server(name: name, address: address))
+                    aniServers.append(Server(name: name, address: address, kind: dict["kind"] as? Int))
                 }
             }
         } else {
@@ -359,13 +443,17 @@ public actor AnisetteServersManager {
                 let remote = remainingRemote.remove(at: remoteIndex)
                 var updated = local
                 updated.name = remote.name
+                if let kind = remote.kind { updated.kind = kind }
                 mergedItems.append(updated)
             }
         }
 
-        // 2. Append newly added remote servers
+        // 2. Append newly added remote servers (legacy-family servers arrive hidden:
+        //    Apple rejects their anisette data, the user can still unhide them)
         for newRemote in remainingRemote {
-            mergedItems.append(AnisetteServerItem(name: newRemote.name, address: newRemote.address, isHidden: false))
+            var item = AnisetteServerItem(name: newRemote.name, address: newRemote.address, isHidden: false, kind: newRemote.kind)
+            item.isHidden = item.isLegacyFamily && !item.isNewMacFamily
+            mergedItems.append(item)
         }
 
         saveLocalServers(mergedItems)
