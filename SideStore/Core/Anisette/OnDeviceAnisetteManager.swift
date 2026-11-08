@@ -75,6 +75,7 @@ public actor OnDeviceAnisetteManager {
 
         if let freshBlob = newAdiPb {
             AnisetteConfigManager.shared.anisetteAdiBlob = freshBlob.base64EncodedString()
+            AnisetteConfigManager.shared.recordProvisionedIdentity(clientInfo: anisetteData.clientInfo)
             debugLog("[OnDeviceAnisetteManager] [Fetch] Fresh local provisioning completed -> saved new adi.pb (\(freshBlob.count) bytes) to Keychain")
         }
 

@@ -153,11 +153,65 @@ public actor AnisetteConfigManager {
         )
     }
 
-    public func makeRequestHeaders() -> AnisetteRequestHeaders {
+    /// True when the user explicitly customised the client identity (Settings ▸ Advanced ▸ Anisette).
+    /// A value equal to the compiled-in default is not considered a customisation.
+    public func hasCustomClientIdentity() -> Bool {
         let config = loadConfig()
+        let customClientInfo = !config.clientInfo.isEmpty && config.clientInfo != AppConstants.Anisette.defaultClientInfo
+        let customUserAgent  = !config.userAgent.isEmpty  && config.userAgent  != AppConstants.Anisette.defaultUserAgent
+        return customClientInfo || customUserAgent
+    }
+
+    /// Resolves the client identity (`X-Mme-Client-Info` + `User-Agent`) to use for
+    /// provisioning, anisette headers and the GSA login.
+    ///
+    /// Unless the user customised it, the identity is the one published by the active
+    /// anisette server at `/v3/client_info`, because Apple rejects a GSA login whose
+    /// client info does not match the identity the ADI data was provisioned for
+    /// (HTTP 503 → -80045). The identity is also pushed into SideSign's GrandSlam
+    /// `User-Agent`, and a cached adi.pb provisioned under a different identity is
+    /// discarded so that it gets re-provisioned with the matching one.
+    public func resolveClientIdentity() async -> AnisetteClientIdentity {
+        let config = loadConfig()
+        let identity: AnisetteClientIdentity
+
+        if hasCustomClientIdentity() || !UserDefaults.standard.useAnisetteServerClientInfo {
+            identity = AnisetteClientIdentity(
+                clientInfo: config.clientInfo.isEmpty ? AppConstants.Anisette.defaultClientInfo : config.clientInfo,
+                userAgent: config.userAgent.isEmpty ? AppConstants.Anisette.defaultUserAgent : config.userAgent
+            )
+            debugLog("[AnisetteConfigManager] Using user-configured client identity: \(identity.clientInfo)")
+        } else {
+            identity = await AnisetteClientIdentityResolver.shared.resolve()
+        }
+
+        // The GSA login must present the same identity as the anisette data.
+        SideSignConfigManager.shared.applyConfigToDeveloperPortal(anisetteIdentity: identity)
+
+        // adi.pb is bound to the identity it was provisioned with; drop a stale one.
+        if let blob = anisetteAdiBlob, !blob.isEmpty {
+            let provisionedWith = UserDefaults.standard.anisetteAdiBlobClientInfo
+            if provisionedWith != identity.clientInfo {
+                debugLog("[AnisetteConfigManager] Cached adi.pb was provisioned with '\(provisionedWith ?? "unknown")' but the current client identity is '\(identity.clientInfo)'. Discarding it so it is re-provisioned.")
+                anisetteAdiBlob = nil
+                UserDefaults.standard.anisetteAdiBlobClientInfo = nil
+            }
+        }
+
+        return identity
+    }
+
+    /// Records the identity a freshly provisioned adi.pb belongs to.
+    public nonisolated func recordProvisionedIdentity(clientInfo: String) {
+        UserDefaults.standard.anisetteAdiBlobClientInfo = clientInfo
+    }
+
+    public func makeRequestHeaders() async -> AnisetteRequestHeaders {
+        let config = loadConfig()
+        let identity = await resolveClientIdentity()
         return AnisetteRequestHeaders().with {
-            $0.clientInfo = config.clientInfo.isEmpty ? AppConstants.Anisette.defaultClientInfo : config.clientInfo
-            $0.userAgent  = config.userAgent.isEmpty ? AppConstants.Anisette.defaultUserAgent : config.userAgent
+            $0.clientInfo = identity.clientInfo
+            $0.userAgent  = identity.userAgent
             if let customLU = config.customLocalUserID, !customLU.isEmpty { $0.localUserID = customLU }
             if let customDev = config.customDeviceID, !customDev.isEmpty { $0.deviceID = customDev }
             if let loc = config.customLocale, !loc.isEmpty { $0.locale = loc }

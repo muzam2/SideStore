@@ -23,17 +23,32 @@ public actor SideSignConfigManager {
             DeveloperPortal.shared.customHeaders = config
             return config
         }
-        let defaultConfig = SideSignHeaders()
+        let defaultConfig = Self.defaultHeaders()
         DeveloperPortal.shared.customHeaders = defaultConfig
         return defaultConfig
     }
-    
-    public nonisolated func applyConfigToDeveloperPortal() {
+
+    /// Default SideSign headers. The GrandSlam `User-Agent` follows the anisette client
+    /// identity (see `AnisetteClientIdentity`): Apple rejects a GSA login whose client
+    /// identity differs from the one the anisette/ADI data was provisioned with.
+    public nonisolated static func defaultHeaders(anisetteIdentity: AnisetteClientIdentity? = nil) -> SideSignHeaders {
+        var headers = SideSignHeaders()
+        guard UserDefaults.standard.useAnisetteServerClientInfo else { return headers }
+        let userAgent = anisetteIdentity?.userAgent
+            ?? UserDefaults.standard.anisetteServerUserAgent
+            ?? AnisetteClientIdentity.fallback.userAgent
+        if !userAgent.isEmpty {
+            headers.grandSlam.userAgent = userAgent
+        }
+        return headers
+    }
+
+    public nonisolated func applyConfigToDeveloperPortal(anisetteIdentity: AnisetteClientIdentity? = nil) {
         if let data = try? Data(contentsOf: configFileURL),
            let config = try? Foundation.JSONDecoder().decode(SideSignHeaders.self, from: data) {
             DeveloperPortal.shared.customHeaders = config
         } else {
-            DeveloperPortal.shared.customHeaders = SideSignHeaders()
+            DeveloperPortal.shared.customHeaders = Self.defaultHeaders(anisetteIdentity: anisetteIdentity)
         }
     }
     
@@ -63,7 +78,7 @@ public actor SideSignConfigManager {
     @discardableResult
     public nonisolated func resetToDefaults() -> SideSignHeaders {
         deleteConfigFile()
-        let defaultConfig = SideSignHeaders()
+        let defaultConfig = Self.defaultHeaders()
         DeveloperPortal.shared.customHeaders = defaultConfig
         return defaultConfig
     }

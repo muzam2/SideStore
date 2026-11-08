@@ -65,6 +65,7 @@ enum AnisetteProvider {
 
         if let freshBlob = newAdiBlob {
             AnisetteConfigManager.shared.anisetteAdiBlob = freshBlob.base64EncodedString()
+            AnisetteConfigManager.shared.recordProvisionedIdentity(clientInfo: anisetteData.clientInfo)
         }
 
         return anisetteData

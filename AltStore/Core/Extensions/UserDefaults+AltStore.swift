@@ -67,6 +67,26 @@ public extension UserDefaults
         get { self.string(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
     }
+    /// Use the identity published by the active anisette server (`/v3/client_info`) for
+    /// `X-Mme-Client-Info` / `User-Agent` unless the user customised them. Default: true.
+    @objc var useAnisetteServerClientInfo: Bool {
+        get { self.bool(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    /// Last client identity fetched from the anisette server (cache for offline use).
+    @objc var anisetteServerClientInfo: String? {
+        get { self.string(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var anisetteServerUserAgent: String? {
+        get { self.string(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    /// The `X-Mme-Client-Info` the cached adi.pb (Keychain) was provisioned with.
+    @objc var anisetteAdiBlobClientInfo: String? {
+        get { self.string(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
     @objc var customAnisetteClientInfo: String? {
         get { self.string(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
@@ -456,6 +476,7 @@ public extension UserDefaults
             #keyPath(UserDefaults.isAnisetteOfflineMode): false,
             #keyPath(UserDefaults.disableAnisetteRotation): false,
             #keyPath(UserDefaults.useOnDeviceAnisette): true,
+            #keyPath(UserDefaults.useAnisetteServerClientInfo): true,
             #keyPath(UserDefaults.useLocalVPN): true,
             #keyPath(UserDefaults.acceptIPv6ConnectionConfig): false,
             #keyPath(UserDefaults.enableEMPforWireguard): false,
