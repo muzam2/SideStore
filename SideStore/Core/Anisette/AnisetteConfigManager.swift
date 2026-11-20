@@ -179,16 +179,23 @@ public actor AnisetteConfigManager {
     ///     by a different source (e.g. ODA → remote, or another server) is stale too.
     public func resolveClientIdentity(server: URL? = nil, source: String? = nil) async -> AnisetteClientIdentity {
         let config = loadConfig()
-        let identity: AnisetteClientIdentity
+        let resolvedIdentity: AnisetteClientIdentity
 
         if hasCustomClientIdentity() || !UserDefaults.standard.useAnisetteServerClientInfo {
-            identity = AnisetteClientIdentity(
+            resolvedIdentity = AnisetteClientIdentity(
                 clientInfo: config.clientInfo.isEmpty ? AppConstants.Anisette.defaultClientInfo : config.clientInfo,
                 userAgent: config.userAgent.isEmpty ? AppConstants.Anisette.defaultUserAgent : config.userAgent
             )
-            debugLog("[AnisetteConfigManager] Using user-configured client identity: \(identity.clientInfo)")
+            debugLog("[AnisetteConfigManager] Using user-configured client identity: \(resolvedIdentity.clientInfo)")
         } else {
-            identity = await AnisetteClientIdentityResolver.shared.resolve(server: server)
+            resolvedIdentity = await AnisetteClientIdentityResolver.shared.resolve(server: server)
+        }
+
+        // Apple rejects the "macOS" OS label at the edge; always present "Mac OS X". Done here so
+        // provisioning, the anisette headers and the GSA login all carry the same string.
+        let identity = resolvedIdentity.normalizedForGrandSlam
+        if identity != resolvedIdentity {
+            debugLog("[AnisetteConfigManager] Rewrote client info OS label: '\(resolvedIdentity.clientInfo)' -> '\(identity.clientInfo)'")
         }
 
         // The GSA login must present the same identity as the anisette data.

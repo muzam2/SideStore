@@ -67,12 +67,16 @@ public actor OnDeviceAnisetteManager {
 
         let mode = AnisetteMode.remoteODA(sourceURL: sourceURL, fallbackURL: fallbackURL)
 
-        let (anisetteData, newAdiPb) = try await provider.fetchAnisetteData(
+        let (fetchedData, newAdiPb) = try await provider.fetchAnisetteData(
             mode: mode,
             identifier: identifierUUID,
             existingAdiBlob: existingAdiPbData,
             headers: headers
         )
+
+        // Value sent as X-MMe-Client-Info; see AnisetteClientIdentity.normalizedClientInfo.
+        var anisetteData = fetchedData
+        anisetteData.clientInfo = AnisetteClientIdentity.normalizedClientInfo(anisetteData.clientInfo)
 
         if let freshBlob = newAdiPb {
             AnisetteConfigManager.shared.anisetteAdiBlob = freshBlob.base64EncodedString()

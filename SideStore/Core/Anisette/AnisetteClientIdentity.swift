@@ -29,6 +29,28 @@ public struct AnisetteClientIdentity: Codable, Equatable, Sendable {
     )
 }
 
+public extension AnisetteClientIdentity {
+    /// Since 19-20 November 2026 Apple's GrandSlam endpoint is reported to answer HTTP 503 to
+    /// any request whose `X-MMe-Client-Info` carries the OS label "macOS" ("<macOS;13.1;22C65>"),
+    /// while the older "Mac OS X" label still gets through (SideStore/SideStore#1745,
+    /// nab138/iloader#1203; iloader 2.4.2 rolled its identity back for the same reason).
+    /// Only the OS label is rewritten; model, version, build and the AuthKit part stay as
+    /// the anisette server (or the user) supplied them.
+    /// needs proper testing: not verified against Apple from this fork.
+    static func normalizedClientInfo(_ clientInfo: String) -> String {
+        return clientInfo.replacingOccurrences(of: "<\\s*macOS\\s*;",
+                                               with: "<Mac OS X;",
+                                               options: [.regularExpression, .caseInsensitive])
+    }
+
+    /// The same identity with the OS label Apple accepts.
+    var normalizedForGrandSlam: AnisetteClientIdentity {
+        let normalized = Self.normalizedClientInfo(self.clientInfo)
+        guard normalized != self.clientInfo else { return self }
+        return AnisetteClientIdentity(clientInfo: normalized, userAgent: self.userAgent)
+    }
+}
+
 public actor AnisetteClientIdentityResolver {
     public static let shared = AnisetteClientIdentityResolver()
 

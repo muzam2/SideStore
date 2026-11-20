@@ -56,7 +56,7 @@ enum AnisetteProvider {
             let existingBlob = AnisetteConfigManager.shared.anisetteAdiBlob.flatMap { Data(base64Encoded: $0) }
 
             do {
-                let (anisetteData, newAdiBlob) = try await provider.fetchAnisetteData(
+                let (fetchedData, newAdiBlob) = try await provider.fetchAnisetteData(
                     mode: .remote(server: server),
                     identifier: identifier,
                     existingAdiBlob: existingBlob,
@@ -78,6 +78,11 @@ enum AnisetteProvider {
                         return false
                     }
                 )
+
+                // This is the value SideSign sends as X-MMe-Client-Info; keep it on the accepted OS label
+                // even if the data came back (or was cached) with the server's own string.
+                var anisetteData = fetchedData
+                anisetteData.clientInfo = AnisetteClientIdentity.normalizedClientInfo(anisetteData.clientInfo)
 
                 UserDefaults.standard.menuAnisetteURL = server.absoluteString
                 debugLog("[AnisetteProvider] Successfully fetched Anisette data from \(server.absoluteString) (client info: \(anisetteData.clientInfo))")
