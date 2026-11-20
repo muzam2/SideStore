@@ -62,6 +62,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate
             }
         }
         
+        // Renew signatures that are close to expiring. Nothing else triggers a refresh unattended
+        // (see ForegroundRefreshManager), so opening the app is what keeps apps from expiring.
+        ForegroundRefreshManager.shared.sceneDidBecomeActive()
+        
         // Flush any .ipa import that arrived before the scene was active (cold launch).
         guard let url = self.pendingImportIPAURL else { return }
         self.pendingImportIPAURL = nil
