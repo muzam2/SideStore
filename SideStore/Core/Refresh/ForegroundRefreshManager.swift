@@ -14,6 +14,7 @@
 //
 
 @preconcurrency import UIKit
+import Combine
 import CoreData
 import UserNotifications
 import Minimuxer
@@ -26,10 +27,22 @@ final class ForegroundRefreshManager: @unchecked Sendable {
     /// SideStore puts all apps back to a full week.
     static let renewalWindow: TimeInterval = 6 * 24 * 60 * 60
 
-    /// Minimum pause after an attempt that did not succeed.
-    static let retryInterval: TimeInterval = 5 * 60
+    /// Pause after an attempt that reached Apple or the device and failed there (also keeps
+    /// the failure toast from reappearing every time the window is activated).
+    static let failureRetryInterval: TimeInterval = 5 * 60
+
+    /// Pause after an attempt that could not start (no VPN / device connection yet, another
+    /// operation running). Short, because the usual reaction is to switch LocalDevVPN on and
+    /// come straight back.
+    static let connectionRetryInterval: TimeInterval = 15
+
+    /// Pause after a successful renewal. With `renewalWindow` nothing is due again for a day
+    /// anyway; this only stops a renew-on-every-activation loop should a renewal ever come
+    /// back without a later expiry date.
+    static let renewedInterval: TimeInterval = 6 * 60 * 60
 
     static let databaseTimeout: TimeInterval = 60
+    static let idleTimeout: TimeInterval = 3 * 60
     static let connectionTimeout: TimeInterval = 45
     static let refreshTimeout: TimeInterval = 5 * 60
 
@@ -45,6 +58,8 @@ final class ForegroundRefreshManager: @unchecked Sendable {
         case nothingDue
         case skipped(String)
         case renewed(count: Int)
+        /// The device connection (pairing, LocalDevVPN, Wi-Fi) was not usable; nothing was attempted.
+        case notConnected(Error, attempted: Int)
         case failed(Error, attempted: Int)
     }
 
@@ -67,15 +82,29 @@ final class ForegroundRefreshManager: @unchecked Sendable {
 
     private let lock = NSLock()
     private var isRunning = false
-    private var lastUnsuccessfulAttempt: Date?
+    private var nextAttemptNotBefore: Date?
+
+    /// Set after an attempt that failed for lack of a device connection, so the renewal can
+    /// start as soon as the connection comes up (see `observeDeviceConnection`).
+    private var isWaitingForConnection = false
+    private var isObservingConnection = false
+
+    /// Managed objects do not retain their context, so the context the apps were fetched in
+    /// is held here. It is only replaced by the next run, never cleared, because a refresh
+    /// that outlives `refreshTimeout` may still be using the objects.
+    private var activeContext: NSManagedObjectContext?
 
     private init() {}
 
     /// Called from `SceneDelegate.sceneDidBecomeActive` (cold launch and every return to the app).
     func sceneDidBecomeActive() {
+        self.start()
+    }
+
+    private func start(ignoringPause: Bool = false) {
         let shouldStart = self.lock.withLock { () -> Bool in
             guard !self.isRunning else { return false }
-            if let last = self.lastUnsuccessfulAttempt, Date().timeIntervalSince(last) < Self.retryInterval {
+            if !ignoringPause, let notBefore = self.nextAttemptNotBefore, Date() < notBefore {
                 return false
             }
             self.isRunning = true
@@ -86,18 +115,70 @@ final class ForegroundRefreshManager: @unchecked Sendable {
         Task.detached(priority: .utility) {
             let outcome = await self.renewIfNeeded()
 
-            self.lock.withLock {
+            let shouldObserveConnection = self.lock.withLock { () -> Bool in
                 self.isRunning = false
+                self.isWaitingForConnection = false
+
                 switch outcome {
-                case .failed, .skipped: self.lastUnsuccessfulAttempt = Date()
-                case .nothingDue, .renewed: self.lastUnsuccessfulAttempt = nil
+                case .nothingDue:
+                    self.nextAttemptNotBefore = nil
+                case .renewed:
+                    self.nextAttemptNotBefore = Date().addingTimeInterval(Self.renewedInterval)
+                case .skipped:
+                    self.nextAttemptNotBefore = Date().addingTimeInterval(Self.connectionRetryInterval)
+                case .failed:
+                    self.nextAttemptNotBefore = Date().addingTimeInterval(Self.failureRetryInterval)
+                case .notConnected:
+                    self.nextAttemptNotBefore = Date().addingTimeInterval(Self.connectionRetryInterval)
+                    self.isWaitingForConnection = true
+
+                    // Start listening for the connection the first time it is found missing.
+                    guard !self.isObservingConnection else { return false }
+                    self.isObservingConnection = true
+                    return true
                 }
+                return false
             }
 
-            let summary = await self.soonestExpiry()
-            await self.scheduleRenewalReminders(for: summary)
-            await self.report(outcome, soonest: summary)
+            if shouldObserveConnection {
+                self.observeDeviceConnection()
+            }
+
+            // Leave the reminders that are already scheduled alone if the database never came up.
+            if DatabaseManager.shared.isStarted {
+                let summary = await self.soonestExpiry()
+                await self.scheduleRenewalReminders(for: summary)
+                await self.report(outcome, soonest: summary)
+            } else {
+                await self.report(outcome, soonest: nil)
+            }
         }
+    }
+
+    /// On a Vision Pro the SideStore window can stay active while LocalDevVPN is switched on
+    /// in another window, so there may be no further `sceneDidBecomeActive` to retry from.
+    /// minimuxer publishes its status on every network change; when the connection becomes
+    /// usable after an attempt that failed for lack of it, try again right away.
+    /// needs proper testing on a Vision Pro: not known whether the tunnel coming up is
+    /// reported as a network change there. Reopening SideStore retries either way.
+    private func observeDeviceConnection() {
+        Task.detached(priority: .utility) {
+            for await _ in minimuxerStatusPublisher.values {
+                let isWaiting = self.lock.withLock { self.isWaitingForConnection }
+                guard isWaiting else { continue }
+
+                guard case .success = await isMinimuxerReady() else { continue }
+                guard await Self.isApplicationActive() else { continue }
+
+                debugLog("[ForegroundRefreshManager] Device connection is back. Retrying renewal...")
+                self.start(ignoringPause: true)
+            }
+        }
+    }
+
+    @MainActor
+    private static func isApplicationActive() -> Bool {
+        return UIApplication.shared.applicationState == .active
     }
 
     // MARK: - Renewal
@@ -116,6 +197,7 @@ final class ForegroundRefreshManager: @unchecked Sendable {
         }
 
         let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+        self.lock.withLock { self.activeContext = context }
         let dueApps = await context.perform { () -> [InstalledApp] in
             let deadline = Date().addingTimeInterval(Self.renewalWindow)
             // Sorted by expiration date, SideStore itself last (same order "Refresh All" uses).
@@ -125,14 +207,18 @@ final class ForegroundRefreshManager: @unchecked Sendable {
         guard !dueApps.isEmpty else { return .nothingDue }
         debugLog("[ForegroundRefreshManager] \(dueApps.count) app(s) expire within \(Int(Self.renewalWindow / 86400)) days. Renewing...")
 
-        // The user (or an import) may already be installing/refreshing; don't compete with that.
-        guard !AppManager.shared.isActivelyManagingAnyApp else {
-            return .skipped("another app operation is in progress")
+        // The user (or an import) may already be installing/refreshing; let that finish first.
+        let idleDeadline = Date().addingTimeInterval(Self.idleTimeout)
+        while AppManager.shared.isActivelyManagingAnyApp {
+            guard Date() < idleDeadline else {
+                return .skipped("another app operation is still in progress")
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
         }
 
         // minimuxer is started asynchronously at boot, so give the device connection a moment.
         if let error = await self.waitForDeviceConnection() {
-            return .failed(error, attempted: dueApps.count)
+            return .notConnected(error, attempted: dueApps.count)
         }
 
         do {
@@ -143,12 +229,20 @@ final class ForegroundRefreshManager: @unchecked Sendable {
             }.first
 
             if let failure {
-                return .failed(failure, attempted: dueApps.count)
+                return Self.outcome(for: failure, attempted: dueApps.count)
             }
+            // Apps that report themselves as running are left out by the operation.
+            guard !results.isEmpty else { return .skipped("no app was refreshed") }
             return .renewed(count: results.count)
         } catch {
-            return .failed(error, attempted: dueApps.count)
+            return Self.outcome(for: error, attempted: dueApps.count)
         }
+    }
+
+    /// A cancelled pipeline (e.g. the same apps are already being refreshed by hand) is not a failure worth a toast.
+    private static func outcome(for error: Error, attempted: Int) -> Outcome {
+        if error is CancellationError { return .skipped("cancelled") }   // OperationError.cancelled is a CancellationError
+        return .failed(error, attempted: attempted)
     }
 
     private func waitForDatabase() async -> Bool {
@@ -276,7 +370,7 @@ final class ForegroundRefreshManager: @unchecked Sendable {
             }
             toastView = ToastView(text: text, detailText: detailText)
 
-        case .failed(let error, let attempted):
+        case .notConnected(let error, let attempted), .failed(let error, let attempted):
             debugLog("[ForegroundRefreshManager] Automatic renewal of \(attempted) app(s) failed: \(error)")
             var detailText = error.localizedDescription
             if let soonest {
